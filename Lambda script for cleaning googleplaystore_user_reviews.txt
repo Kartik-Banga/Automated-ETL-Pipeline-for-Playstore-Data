@@ -1,0 +1,42 @@
+import json
+import boto3
+import pandas as pd
+import numpy as np
+from io import StringIO
+def lambda_handler(event, context):
+    bucket_name = 'google-play-store-etl'
+    file_key = 'input_uncleaned_googleplaystore_reviews/reviews/googleplaystore_user_reviews.csv'
+    destination_bucket_name = 'google-play-store-etl'
+    destination_file_key = 'input/apps_and_reviews/cleaned_review_data.csv'
+    # Create an S3 client
+    s3 = boto3.client('s3')
+    
+    # Download the file from S3
+    response = s3.get_object(Bucket=bucket_name, Key=file_key)
+    data = response['Body'].read().decode('utf-8')
+    
+    # Perform data cleaning (example: removing duplicates)
+    df = pd.read_csv(StringIO(data))
+    df = df[['App','Sentiment']]
+    df = df.dropna()
+    
+    temp = df[df['Sentiment'] == "Positive"].groupby('App').size()
+    temp = temp.reset_index()
+    temp.columns = ['Apps','Number_of_Positive_Reviews']
+    
+    total_size = df.groupby('App').size()
+    total_size = total_size.reset_index()
+    total_size.columns = ['Apps','Total_Number_of_Reviews']
+    
+    new_df = pd.merge(temp, total_size, how='inner', on='Apps')
+    new_df['Percentage_of_positive_reviews'] = (new_df['Number_of_Positive_Reviews']/new_df['Total_Number_of_Reviews'])*100
+    new_df['Percentage_of_positive_reviews'] = new_df['Percentage_of_positive_reviews'].round(2)
+    
+    # Upload the cleaned data to the destination S3 bucket
+    cleaned_data = new_df.to_csv(index=False)
+    s3.put_object(Body=cleaned_data, Bucket=destination_bucket_name, Key=destination_file_key)
+    # TODO implement
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Hello from Lambda!')
+    }

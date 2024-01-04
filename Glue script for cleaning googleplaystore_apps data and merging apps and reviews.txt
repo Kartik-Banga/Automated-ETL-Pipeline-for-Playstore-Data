@@ -1,0 +1,162 @@
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrameCollection
+from awsglue.dynamicframe import DynamicFrame
+
+
+# Script generated for node Custom Transform
+def MyTransform(glueContext, dfc) -> DynamicFrameCollection:
+    df = dfc.select(list(dfc.keys())[0]).toDF()
+    df.createOrReplaceTempView("inputTable")
+
+    df_transformed = spark.sql(  # Cleaning Category column
+        """ SELECT * FROM inputTable WHERE Category IS NOT NULL AND NOT Category RLIKE '\\d' """
+    )
+    df_transformed.createOrReplaceTempView("inputTable_1")
+
+    df_transformed_second_query = spark.sql(  # Cleaning Rating column
+        """ Select * from inputTable_1 where Rating IS NOT NULL 
+        AND Rating >= 0 AND Rating <= 5 """
+    )
+    df_transformed_second_query.createOrReplaceTempView("inputTable_2")
+
+    df_transformed_third_query = spark.sql(  # Cleaning Reviews column
+        """ SELECT *, 
+           CASE 
+               WHEN inputTable_2.Reviews LIKE '%M' 
+               THEN CAST(SUBSTRING(inputTable_2.Reviews, 1, LENGTH(inputTable_2.Reviews) - 1) AS DOUBLE) * 1000000
+               ELSE CAST(inputTable_2.Reviews AS DOUBLE) 
+           END AS Reviews_apps FROM inputTable_2 """
+    )
+    df_transformed_third_query.createOrReplaceTempView("inputTable_3")
+
+    df_transformed_fourth_query = spark.sql(  # Cleaning Size column
+        """ SELECT *,
+           CASE 
+               WHEN inputTable_3.Size IS NOT NULL 
+                    AND inputTable_3.Size != '1,000+' 
+                    AND inputTable_3.Size != 'Varies with device' 
+                    AND inputTable_3.Size LIKE '%M' 
+               THEN CAST(SUBSTRING(inputTable_3.Size, 1, LENGTH(inputTable_3.Size) - 1) AS DOUBLE) * 1000000 
+               WHEN inputTable_3.Size IS NOT NULL 
+                    AND inputTable_3.Size != '1,000+' 
+                    AND inputTable_3.Size != 'Varies with device' 
+                    AND inputTable_3.Size LIKE '%k' 
+               THEN CAST(SUBSTRING(inputTable_3.Size, 1, LENGTH(inputTable_3.Size) - 1) AS DOUBLE) * 1000 
+               ELSE NULL 
+           END AS App_Size_In_Bytes FROM inputTable_3 """
+    )
+    df_transformed_fourth_query.createOrReplaceTempView("inputTable_4")
+
+    df_transformed_fifth_query = spark.sql(  # Cleaning Type column
+        """ Select * from inputTable_4 where Type is not Null and 
+            Type != '0' and Type != 'NaN' """
+    )
+    df_transformed_fifth_query.createOrReplaceTempView("inputTable_5")
+
+    df_transformed_sixth_query = spark.sql(  # Cleaning Price column
+        """ SELECT *
+          FROM (
+               SELECT *,
+                    CASE 
+                        WHEN Price IS NOT NULL AND Price != 'Everyone' 
+                        THEN 
+                           CASE 
+                               WHEN Price LIKE '$%' 
+                               THEN CAST(SUBSTRING(Price, 2) AS DOUBLE) 
+                               ELSE CAST(Price AS DOUBLE) 
+                           END 
+                        ELSE NULL 
+                    END AS `Price($)` FROM inputTable_5) 
+                    WHERE `Price($)` IS NOT NULL """
+    )
+    df_transformed_sixth_query.createOrReplaceTempView("inputTable_6")
+
+    # Cleaning 'Course Rating' column
+    df_transformed_seventh_query = spark.sql(
+        """ Select * from inputTable_6 where
+                `Content Rating` is not null and `Content Rating` != '(Blanks)' """
+    )
+    df_transformed_seventh_query.createOrReplaceTempView("inputTable_7")
+
+    df_transformed_eighth_query = spark.sql(
+        """
+        SELECT App, Category, Rating, Reviews, Size, Installs, 
+        Type, Price, `Content Rating`, Genres, `Last Updated`, 
+        Number_of_Positive_Reviews, Total_Number_of_Reviews, 
+        Percentage_of_positive_reviews, `Price($)`, App_Size_In_Bytes, Reviews_apps
+        FROM inputTable_7
+        """
+    )
+
+    dyf_transformed = DynamicFrame.fromDF(
+        df_transformed_eighth_query, glueContext, "result0"
+    )
+    return DynamicFrameCollection({"CustomTransform0": dyf_transformed}, glueContext)
+
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+# Script generated for node S3 Cleaned_review
+S3Cleaned_review_node1704041816824 = glueContext.create_dynamic_frame.from_catalog(
+    database="googleplaystore_apps_crawler_database",
+    table_name="cleaned_review_data_csv",
+    transformation_ctx="S3Cleaned_review_node1704041816824",
+)
+
+# Script generated for node S3 PlayStore Apps
+S3PlayStoreApps_node1704041824815 = glueContext.create_dynamic_frame.from_catalog(
+    database="googleplaystore_apps_crawler_database",
+    table_name="googleplaystore_apps_csv",
+    transformation_ctx="S3PlayStoreApps_node1704041824815",
+)
+
+# Script generated for node Join
+Join_node1704041965636 = Join.apply(
+    frame1=S3PlayStoreApps_node1704041824815,
+    frame2=S3Cleaned_review_node1704041816824,
+    keys1=["app"],
+    keys2=["apps"],
+    transformation_ctx="Join_node1704041965636",
+)
+
+# Script generated for node Custom Transform
+CustomTransform_node1704043455249 = MyTransform(
+    glueContext,
+    DynamicFrameCollection(
+        {"Join_node1704041965636": Join_node1704041965636}, glueContext
+    ),
+)
+
+# Script generated for node Select From Collection
+SelectFromCollection_node1704043956298 = SelectFromCollection.apply(
+    dfc=CustomTransform_node1704043455249,
+    key=list(CustomTransform_node1704043455249.keys())[0],
+    transformation_ctx="SelectFromCollection_node1704043956298",
+)
+
+# Script generated for node S3 Target
+S3Target_node1704043976419 = glueContext.getSink(
+    path="s3://google-play-store-etl/output/",
+    connection_type="s3",
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=[],
+    enableUpdateCatalog=True,
+    transformation_ctx="S3Target_node1704043976419",
+)
+S3Target_node1704043976419.setCatalogInfo(
+    catalogDatabase="googleplaystore_apps_crawler_database",
+    catalogTableName="Playstore json data",
+)
+S3Target_node1704043976419.setFormat("csv")
+S3Target_node1704043976419.writeFrame(SelectFromCollection_node1704043956298)
+job.commit()
